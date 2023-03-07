@@ -51,20 +51,18 @@ impl<'a, T> Drop for AVec<'a, T> {
             unsafe {
                 ManuallyDrop::drop(&mut self.inner.heap);
             }
-        } else {
-            if std::mem::needs_drop::<T>() {
-                // Drop the allocated stack elements in place
-                unsafe {
-                    std::ptr::drop_in_place(std::ptr::slice_from_raw_parts_mut(
-                        self.inner.stack.buf_ptr as *mut T,
-                        self.fill_ptr(),
-                    )); // I think this drops the elements, we don't need to loop.
-                        /*
-                            for x in slice::from_raw_parts_mut(self.inner.stack.buf_ptr, self.fill_ptr())
-                            {
-                            std::ptr::drop_in_place(x.as_mut_ptr());
-                        }*/
-                }
+        } else if std::mem::needs_drop::<T>() {
+            // Drop the allocated stack elements in place
+            unsafe {
+                std::ptr::drop_in_place(std::ptr::slice_from_raw_parts_mut(
+                    self.inner.stack.buf_ptr as *mut T,
+                    self.fill_ptr(),
+                )); // I think this drops the elements, we don't need to loop.
+                    /*
+                        for x in slice::from_raw_parts_mut(self.inner.stack.buf_ptr, self.fill_ptr())
+                        {
+                        std::ptr::drop_in_place(x.as_mut_ptr());
+                    }*/
             }
         }
     }

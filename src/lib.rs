@@ -176,7 +176,7 @@ where
             ptr: *mut c_void,
             data: *mut c_void,
         ) {
-            (&mut *(data as *mut F))(ptr);
+            (*(data as *mut F))(ptr);
         }
 
         trampoline::<F>

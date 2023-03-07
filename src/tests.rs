@@ -96,9 +96,7 @@ fn non_primitive_type() {
         super::stackalloc(10, String::from("Hello world"), |strings| {
             strings.iter().cloned().collect::<String>()
         }),
-        std::iter::repeat(String::from("Hello world"))
-            .take(10)
-            .collect::<String>()
+        String::from("Hello world").repeat(10)
     );
 }
 
