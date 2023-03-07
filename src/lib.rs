@@ -85,33 +85,24 @@
 //! # License
 //! MIT licensed
 
-#![cfg_attr(nightly, feature(test))] 
-
+#![cfg_attr(nightly, feature(test))]
 #![allow(dead_code)]
-
-
 #![cfg_attr(all(feature = "no_std", not(test)), no_std)]
 #![cfg_attr(all(feature = "no_std"), feature(core_intrinsics))]
 
-#[cfg(all(nightly, test))] extern crate test;
+#[cfg(all(nightly, test))]
+extern crate test;
 
 #[allow(unused)]
 use core::{
-    mem::{
-	self,
-	MaybeUninit,
-	ManuallyDrop,
-    },
-    panic::{
-	self,
-	AssertUnwindSafe,
-    },
-    slice,
     ffi::c_void,
-    ptr,
+    mem::{self, ManuallyDrop, MaybeUninit},
+    panic::{self, AssertUnwindSafe},
+    ptr, slice,
 };
 
-pub mod avec; pub use avec::AVec;
+pub mod avec;
+pub use avec::AVec;
 mod ffi;
 
 /// Allocate a runtime length uninitialised byte buffer on the stack, call `callback` with this buffer, and then deallocate the buffer.
@@ -153,68 +144,73 @@ mod ffi;
 /// In the absense of inlining LTO (which *is* enabled if possible), this funcion is entirely safe to inline without leaking the `alloca`'d memory into the caller's frame; however, the FFI wrapper call is prevented from doing so in case the FFI call gets inlined into this function call.
 /// It is unlikely the trampoline to the `callback` closure itself can be inlined.
 pub fn alloca<T, F>(size: usize, callback: F) -> T
-where F: FnOnce(&mut [MaybeUninit<u8>]) -> T
+where
+    F: FnOnce(&mut [MaybeUninit<u8>]) -> T,
 {
     let mut callback = ManuallyDrop::new(callback);
     let mut rval = MaybeUninit::uninit();
 
-    let mut callback = |allocad_ptr: *mut c_void| {
-	unsafe {
-	    let slice = slice::from_raw_parts_mut(allocad_ptr as *mut MaybeUninit<u8>, size);
-	    let callback = ManuallyDrop::take(&mut callback);
+    let mut callback = |allocad_ptr: *mut c_void| unsafe {
+        let slice = slice::from_raw_parts_mut(allocad_ptr as *mut MaybeUninit<u8>, size);
+        let callback = ManuallyDrop::take(&mut callback);
 
         #[cfg(feature = "no_std")]
-	    {
-            rval = MaybeUninit::new(catch_unwind(move||{callback(slice)}));
+        {
+            rval = MaybeUninit::new(catch_unwind(move || callback(slice)));
         }
         #[cfg(not(feature = "no_std"))]
         {
-            rval = MaybeUninit::new(std::panic::catch_unwind(AssertUnwindSafe(move || callback(slice))));
+            rval = MaybeUninit::new(std::panic::catch_unwind(AssertUnwindSafe(move || {
+                callback(slice)
+            })));
         }
-	}
     };
 
     /// Create and use the trampoline for input closure `F`.
-    #[inline(always)] fn create_trampoline<F>(_: &F) -> ffi::CallbackRaw
-    where F: FnMut(*mut c_void)
+    #[inline(always)]
+    fn create_trampoline<F>(_: &F) -> ffi::CallbackRaw
+    where
+        F: FnMut(*mut c_void),
     {
-	unsafe extern "C" fn trampoline<F: FnMut(*mut c_void)>(ptr: *mut c_void, data: *mut c_void)
-	{
-	    (&mut *(data as *mut F))(ptr);
-	}
+        unsafe extern "C" fn trampoline<F: FnMut(*mut c_void)>(
+            ptr: *mut c_void,
+            data: *mut c_void,
+        ) {
+            (&mut *(data as *mut F))(ptr);
+        }
 
-	trampoline::<F>
+        trampoline::<F>
     }
 
     let rval = unsafe {
-        ffi::alloca_trampoline(size, create_trampoline(&callback), &mut callback as *mut _ as *mut c_void);
+        ffi::alloca_trampoline(
+            size,
+            create_trampoline(&callback),
+            &mut callback as *mut _ as *mut c_void,
+        );
         rval.assume_init()
     };
-    
+
     #[cfg(not(feature = "no_std"))]
-    match rval
-    {
+    match rval {
         Ok(v) => v,
         Err(pan) => std::panic::resume_unwind(pan),
     }
     #[cfg(feature = "no_std")]
-    return match rval{
+    return match rval {
         Ok(v) => v,
         Err(()) => core::panic!(),
-    }
+    };
 }
 
-
-
 #[cfg(feature = "no_std")]
-unsafe fn catch_unwind<R, F: FnOnce() -> R>(f: F) -> Result<R, ()>{
-    
+unsafe fn catch_unwind<R, F: FnOnce() -> R>(f: F) -> Result<R, ()> {
     union Data<F, R> {
         f: ManuallyDrop<F>,
         r: ManuallyDrop<R>,
         p: (),
     }
-    
+
     #[inline]
     fn do_call<F: FnOnce() -> R, R>(data: *mut u8) {
         unsafe {
@@ -234,13 +230,14 @@ unsafe fn catch_unwind<R, F: FnOnce() -> R>(f: F) -> Result<R, ()>{
         }
     }
 
-    let mut data = Data { f: ManuallyDrop::new(f) };
+    let mut data = Data {
+        f: ManuallyDrop::new(f),
+    };
     let data_ptr = &mut data as *mut _ as *mut u8;
 
-    
-    if core::intrinsics::r#try(do_call::<F, R>, data_ptr, do_catch::<F, R>) == 0{
+    if core::intrinsics::r#try(do_call::<F, R>, data_ptr, do_catch::<F, R>) == 0 {
         Result::Ok(ManuallyDrop::into_inner(data.r))
-    }else{
+    } else {
         Result::Err(())
     }
 }
@@ -250,10 +247,10 @@ unsafe fn catch_unwind<R, F: FnOnce() -> R>(f: F) -> Result<R, ()>{
 /// These are mostly re-implementations of unstable corelib functions in stable Rust.
 pub mod helpers {
     use super::*;
-    #[inline(always)] pub(crate) fn align_buffer_to<T>(ptr: *mut u8) -> *mut T
-    {
-	use core::mem::align_of;
-	((ptr as usize) + align_of::<T>() - (ptr as usize) % align_of::<T>()) as *mut T
+    #[inline(always)]
+    pub(crate) fn align_buffer_to<T>(ptr: *mut u8) -> *mut T {
+        use core::mem::align_of;
+        ((ptr as usize) + align_of::<T>() - (ptr as usize) % align_of::<T>()) as *mut T
     }
 
     /// Convert a slice of `MaybeUninit<T>` to `T`.
@@ -262,9 +259,9 @@ pub mod helpers {
     ///
     /// # Safety
     /// The caller must ensure all elements of `buf` have been initialised before calling this function.
-    #[inline(always)] pub unsafe fn slice_assume_init<T>(buf: & [MaybeUninit<T>]) -> &[T]
-    {
-	& *(buf as *const [MaybeUninit<T>] as *const [T]) // MaybeUninit::slice_assume_init()
+    #[inline(always)]
+    pub unsafe fn slice_assume_init<T>(buf: &[MaybeUninit<T>]) -> &[T] {
+        &*(buf as *const [MaybeUninit<T>] as *const [T]) // MaybeUninit::slice_assume_init()
     }
 
     /// Convert a mutable slice of `MaybeUninit<T>` to `T`.
@@ -273,9 +270,9 @@ pub mod helpers {
     ///
     /// # Safety
     /// The caller must ensure all elements of `buf` have been initialised before calling this function.
-    #[inline(always)] pub unsafe fn slice_assume_init_mut<T>(buf: &mut [MaybeUninit<T>]) -> &mut [T]
-    {
-	&mut *(buf as *mut [MaybeUninit<T>] as *mut [T]) // MaybeUninit::slice_assume_init_mut()
+    #[inline(always)]
+    pub unsafe fn slice_assume_init_mut<T>(buf: &mut [MaybeUninit<T>]) -> &mut [T] {
+        &mut *(buf as *mut [MaybeUninit<T>] as *mut [T]) // MaybeUninit::slice_assume_init_mut()
     }
 }
 
@@ -284,34 +281,37 @@ use helpers::*;
 /// Allocate a runtime length zeroed byte buffer on the stack, call `callback` with this buffer, and then deallocate the buffer.
 ///
 /// See `alloca()`.
-#[inline] pub fn alloca_zeroed<T, F>(size: usize, callback: F) -> T
-where F: FnOnce(&mut [u8]) -> T
+#[inline]
+pub fn alloca_zeroed<T, F>(size: usize, callback: F) -> T
+where
+    F: FnOnce(&mut [u8]) -> T,
 {
     alloca(size, move |buf| {
-	// SAFETY: We zero-initialise the backing slice
-	callback(unsafe {
-	    ptr::write_bytes(buf.as_mut_ptr(), 0, buf.len()); // buf.fill(MaybeUninit::zeroed());
-	    slice_assume_init_mut(buf)
-	})
+        // SAFETY: We zero-initialise the backing slice
+        callback(unsafe {
+            ptr::write_bytes(buf.as_mut_ptr(), 0, buf.len()); // buf.fill(MaybeUninit::zeroed());
+            slice_assume_init_mut(buf)
+        })
     })
 }
-
 
 /// Allocate a runtime length slice of uninitialised `T` on the stack, call `callback` with this buffer, and then deallocate the buffer.
 ///
 /// The slice is aligned to type `T`.
 ///
 /// See `alloca()`.
-#[inline] pub fn stackalloc_uninit<T, U, F>(size: usize, callback: F) -> U
-where F: FnOnce(&mut [MaybeUninit<T>]) -> U
+#[inline]
+pub fn stackalloc_uninit<T, U, F>(size: usize, callback: F) -> U
+where
+    F: FnOnce(&mut [MaybeUninit<T>]) -> U,
 {
     let size_bytes = (core::mem::size_of::<T>() * size) + core::mem::align_of::<T>();
     alloca(size_bytes, move |buf| {
-	let abuf = align_buffer_to::<MaybeUninit<T>>(buf.as_mut_ptr() as *mut u8);
-	debug_assert!(buf.as_ptr_range().contains(&(abuf as *const _ as *const MaybeUninit<u8>)));
-	unsafe {
-	    callback(slice::from_raw_parts_mut(abuf, size))
-	}
+        let abuf = align_buffer_to::<MaybeUninit<T>>(buf.as_mut_ptr() as *mut u8);
+        debug_assert!(buf
+            .as_ptr_range()
+            .contains(&(abuf as *const _ as *const MaybeUninit<u8>)));
+        unsafe { callback(slice::from_raw_parts_mut(abuf, size)) }
     })
 }
 
@@ -320,23 +320,24 @@ where F: FnOnce(&mut [MaybeUninit<T>]) -> U
 /// The slice is aligned to type `T`.
 ///
 /// See `alloca()`.
-#[inline] pub fn stackalloc_with<T, U, F, I>(size: usize, mut init_with: I, callback: F) -> U
-where F: FnOnce(&mut [T]) -> U,
-      I: FnMut() -> T
+#[inline]
+pub fn stackalloc_with<T, U, F, I>(size: usize, mut init_with: I, callback: F) -> U
+where
+    F: FnOnce(&mut [T]) -> U,
+    I: FnMut() -> T,
 {
     stackalloc_uninit(size, move |buf| {
-	buf.fill_with(move || MaybeUninit::new(init_with()));
-	// SAFETY: We have initialised the buffer above
-	let buf = unsafe { slice_assume_init_mut(buf) };
-	let ret = callback(buf);
-	if mem::needs_drop::<T>()
-	{
-	    // SAFETY: We have initialised the buffer above
-	    unsafe {
-		ptr::drop_in_place(buf as *mut _);
-	    }
-	}
-	ret
+        buf.fill_with(move || MaybeUninit::new(init_with()));
+        // SAFETY: We have initialised the buffer above
+        let buf = unsafe { slice_assume_init_mut(buf) };
+        let ret = callback(buf);
+        if mem::needs_drop::<T>() {
+            // SAFETY: We have initialised the buffer above
+            unsafe {
+                ptr::drop_in_place(buf as *mut _);
+            }
+        }
+        ret
     })
 }
 
@@ -345,26 +346,28 @@ where F: FnOnce(&mut [T]) -> U,
 /// The slice is aligned to type `T`.
 ///
 /// See `alloca()`.
-#[inline] pub fn stackalloc<T, U, F>(size: usize, init: T, callback: F) -> U
-where F: FnOnce(&mut [T]) -> U,
-      T: Clone
+#[inline]
+pub fn stackalloc<T, U, F>(size: usize, init: T, callback: F) -> U
+where
+    F: FnOnce(&mut [T]) -> U,
+    T: Clone,
 {
     stackalloc_with(size, move || init.clone(), callback)
 }
-
 
 /// Allocate a runtime length slice of `T` on the stack, fill it by calling `T::default()`, call `callback` with this buffer, and then drop and deallocate the buffer.
 ///
 /// The slice is aligned to type `T`.
 ///
 /// See `alloca()`.
-#[inline] pub fn stackalloc_with_default<T, U, F>(size: usize, callback: F) -> U
-where F: FnOnce(&mut [T]) -> U,
-      T: Default
+#[inline]
+pub fn stackalloc_with_default<T, U, F>(size: usize, callback: F) -> U
+where
+    F: FnOnce(&mut [T]) -> U,
+    T: Default,
 {
     stackalloc_with(size, T::default, callback)
 }
-
 
 /// Collect an iterator into a stack allocated buffer up to `size` elements, call `callback` with this buffer, and then drop and deallocate the buffer.
 ///
@@ -373,30 +376,28 @@ where F: FnOnce(&mut [T]) -> U,
 /// # Size
 /// We will only take up to `size` elements from the iterator, the rest of the iterator is dropped.
 /// If the iterator yield less elements than `size`, then the slice passed to callback will be smaller than `size` and only contain the elements actually yielded.
-#[inline] pub fn stackalloc_with_iter<I, T, U, F>(size: usize, iter: I, callback: F) -> U
-where F: FnOnce(&mut [T]) -> U,
-      I: IntoIterator<Item = T>,
+#[inline]
+pub fn stackalloc_with_iter<I, T, U, F>(size: usize, iter: I, callback: F) -> U
+where
+    F: FnOnce(&mut [T]) -> U,
+    I: IntoIterator<Item = T>,
 {
     stackalloc_uninit(size, move |buf| {
-	let mut done = 0;
-	for (d, s) in buf.iter_mut().zip(iter.into_iter())
-	{
-	    *d = MaybeUninit::new(s);
-	    done+=1;
-	}
-	// SAFETY: We just initialised `done` elements of `buf` above.
-	let buf = unsafe {
-	    slice_assume_init_mut(&mut buf[..done])
-	};
-	let ret = callback(buf);	
-	if mem::needs_drop::<T>()
-	{
-	    // SAFETY: We have initialised the `buf` above
-	    unsafe {
-		ptr::drop_in_place(buf as *mut _);
-	    }
-	}
-	ret
+        let mut done = 0;
+        for (d, s) in buf.iter_mut().zip(iter.into_iter()) {
+            *d = MaybeUninit::new(s);
+            done += 1;
+        }
+        // SAFETY: We just initialised `done` elements of `buf` above.
+        let buf = unsafe { slice_assume_init_mut(&mut buf[..done]) };
+        let ret = callback(buf);
+        if mem::needs_drop::<T>() {
+            // SAFETY: We have initialised the `buf` above
+            unsafe {
+                ptr::drop_in_place(buf as *mut _);
+            }
+        }
+        ret
     })
 }
 
@@ -406,10 +407,12 @@ where F: FnOnce(&mut [T]) -> U,
 ///
 /// # Size
 /// If the implementation of `ExactSizeIterator` on `I` is incorrect and reports a longer length than the iterator actually produces, then the slice passed to `callback` is shortened to the number of elements actually produced.
-#[inline] pub fn stackalloc_from_iter_exact<I, T, U, F>(iter: I, callback: F) -> U
-where F: FnOnce(&mut [T]) -> U,
-      I: IntoIterator<Item = T>,
-      I::IntoIter: ExactSizeIterator,
+#[inline]
+pub fn stackalloc_from_iter_exact<I, T, U, F>(iter: I, callback: F) -> U
+where
+    F: FnOnce(&mut [T]) -> U,
+    I: IntoIterator<Item = T>,
+    I::IntoIter: ExactSizeIterator,
 {
     let iter = iter.into_iter();
     stackalloc_with_iter(iter.len(), iter, callback)
@@ -425,19 +428,23 @@ where F: FnOnce(&mut [T]) -> U,
 ///
 /// # Size
 /// The size allocated for the buffer will be the upper bound of the iterator's `size_hint()` if one exists. If not, then the size allocated will be the lower bound of `size_hint()`.
-/// This can potentially result in only some of the iterator being present in the buffer, or the buffer allocated being much larger than the iterator itself. 
+/// This can potentially result in only some of the iterator being present in the buffer, or the buffer allocated being much larger than the iterator itself.
 /// If this iterator does not have a good `size_hint()` for this purpose, use `stackalloc_with_iter()`, or `stackalloc_from_iter_exact()` if the iterator has an exact size.
-#[inline] pub unsafe fn stackalloc_from_iter_trusted<I, T, U, F>(iter: I, callback: F) -> U
-where F: FnOnce(&mut [T]) -> U,
-      I: IntoIterator<Item = T>,
+#[inline]
+pub unsafe fn stackalloc_from_iter_trusted<I, T, U, F>(iter: I, callback: F) -> U
+where
+    F: FnOnce(&mut [T]) -> U,
+    I: IntoIterator<Item = T>,
 {
     let iter = iter.into_iter();
-    stackalloc_with_iter(match iter.size_hint() {
-	(_, Some(x)) |
-	(x, _) => x,
-    }, iter, callback)
+    stackalloc_with_iter(
+        match iter.size_hint() {
+            (_, Some(x)) | (x, _) => x,
+        },
+        iter,
+        callback,
+    )
 }
-
 
 #[cfg(test)]
 mod tests;
